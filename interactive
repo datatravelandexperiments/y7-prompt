@@ -1,0 +1,179 @@
+# y7pstitle ‹title› ‹icon›
+# Takes two arguments: a string intended for the window title, and a string
+# intended for the window icon name. It prints, if possible, a control sequence
+# that sets these. This function is used to set up the prompt variables, and
+# does not persist in the user environment.
+
+case $TERM in
+    xterm*|mlterm*|screen|dtterm|*rxvt*)
+        # Probably more, but most terminals now seem to call themselves
+        # ‘xterm’ (even when they're not fully xterm-compatible).
+        function y7pstitle
+        {
+            printf $'\e]0;%s\a' "$1"
+            [[ -n $2 ]] && printf $'\e]1;%s\a' "$2"
+        }
+        ;;
+    tmux*)
+        function y7pstitle
+        {
+            printf $'\ek%s\e\\' "$1"
+        }
+        ;;
+    *)
+        [[ -z $TERM ]] && TERM=dumb
+        function y7pstitle
+        {
+            :
+        }
+        ;;
+esac
+export TERM
+
+# y7psterminalsupports256color
+# Test whether the terminal supports 256-colour using CSI 1 ; 38 ; 5 m.
+# Assumes that if it supports direct (24-bit) colour it also supports 256.
+# Does not persist in the user environment.
+
+function y7psterminalsupports256color
+{
+    typeset s=$(tput setaf 99)
+    [[ $s == $'\e[38;5;99m' || $s == $'\e[38:2::0:0:99m' ]]
+}
+
+Y7PSS=0 # prompt color, 256-color, success
+Y7PSF=1 # prompt color, 256-color, failure
+Y7PSN=  # prompt note text
+
+# y7mkprompt
+# A shell-specific function to set the prompt variables.
+# Does not persist in the user environment.
+
+case $Y7SH in
+    ksh93)
+        Y7PSC=0 # prompt color, 256-color, dynamically set from Y7PSS/Y7PSF.
+        function y7mkprompt
+        {
+            typeset prefix=': ' suffix=';'
+            typeset ttl=${ y7pstitle "$Y7HOST: \$PWD" "$Y7HOST: \${PWD##*/}"; }
+            [[ -n $ttl ]] && ttl+=$'\r'
+            typeset sm rm body
+            if y7psterminalsupports256color
+            then
+                sm=$'\e[1;38;5;${Y7PSC}m'
+                rm=$'\e[0m'
+                function Y7PSC.get
+                {
+                    .sh.value=$(($? ? ${Y7PSF} : ${Y7PSS}))
+                }
+            else
+                sm=${ tput bold; }
+                rm=${ tput sgr0; }
+            fi
+            (( $(id -u) == 0 )) && suffix="#$suffix"
+            # shellcheck disable=SC2016 # Do not want `body` expanded here.
+            typeset body='$(printf %(%H:%M)T)${Y7PSN:+ }${Y7PSN}'
+            PS1="${ttl}${sm}${prefix}${body}${suffix}${rm} "
+            PS2=$'\t'
+        }
+        HISTSIZE=5000
+        ;;
+    bash)
+        function y7mkprompt
+        {
+            typeset sitm=$(tput sitm) ritm=$(tput ritm)
+            typeset prefix=': ' suffix=';'
+            typeset ttl=$(y7pstitle "$Y7HOST: \${PWD}" "$Y7HOST: \${PWD##*/}")
+            [[ -n $ttl ]] && ttl+=$'\r'
+            typeset sm rm
+            if y7psterminalsupports256color
+            then
+                # shellcheck disable=SC2016 # Do not want expansion here.
+                sm=$'\e[0m\e[1m\e[38;5;$(($??${Y7PSF}:${Y7PSS}))m'
+                rm=$'\e[0m'
+            else
+                sm="${ritm}$(tput bold)"
+                rm=$(tput sgr0)
+            fi
+            (( $(id -u) == 0 )) && suffix="#$suffix"
+             # shellcheck disable=SC2016 # Do not want the body expanded here.
+            typeset body='\D{%H:%M}${Y7PSN:+ }${Y7PSN}'
+            PS1="\\[${ttl}${sm}\\]${prefix}${body}${suffix}\\[${rm}${sitm}\\] "
+            PS2=$'\t'
+             # shellcheck disable=SC2034 # PS0 is a bash variable.
+            [[ -n $ritm ]] && PS0="$ritm"
+        }
+        ;;
+    zsh)
+        function y7mkprompt
+        {
+            typeset sitm=$(tput sitm) ritm=$(tput ritm)
+            typeset ttl=$(y7pstitle '%m: %d' '%m: %1d')
+            PS1="%{${ttl}%B%F{%1v}%}: %T%2(V: :)%2v%(#:#:);%{%f%b${sitm}%} "
+            PS2=$'\t'
+             # shellcheck disable=SC2034 # POSTEDIT is a zsh variable.
+            [[ -n $ritm ]] && POSTEDIT="$ritm"
+        }
+        function y7promptprecmd
+        {
+            (( psvar[1] = $? ? ${Y7PSF} : ${Y7PSS} ))
+            psvar[2]="$Y7PSN"
+        }
+        precmd_functions+=(y7promptprecmd)
+
+        setopt no_nomatch
+        setopt APPEND_HISTORY SHARE_HISTORY
+        setopt HIST_EXPIRE_DUPS_FIRST HIST_FIND_NO_DUPS HIST_SAVE_NO_DUPS
+        HISTFILE=$HOME/.zsh_history
+        HISTSIZE=5000
+        # shellcheck disable=SC2034 # SAVEHIST is a zsh variable.
+        SAVEHIST=5000
+        ;;
+esac
+
+# y7promptcolor [‹normal› [‹failure›]]
+# Sets the colours for the prompt. Colours are 256-color indices.
+# Defaults a 232 (almost black) for success and 1 (red) for failure.
+
+function y7promptcolor
+{
+    Y7PSS=${1:-232}
+    Y7PSF=${2:-1}
+}
+
+# y7promptnote [‹note› …]
+# Add text before the final ‘;’. Primarily intended to label subshells
+# that are not in the default state, e.g. are set up with a specific
+# project environment, or connected to a remote host.
+
+function y7promptnote
+{
+    if [[ $# == 0 ]]
+    then
+        y7dirs -S Y7PSNOTES
+    elif [[ "$1" == '' ]]
+    then
+        Y7PSNOTES=
+        Y7PSN=
+    else
+        typeset -a notes
+        y7esplit notes "$Y7PSNOTES"
+        y7arrayadd notes -n "$@"
+        Y7PSNOTES=$(y7ejoin "${notes[@]}")
+        export Y7PSNOTES
+        Y7PSN="${notes[*]}"
+    fi
+}
+
+# Set up the prompt.
+
+y7mkprompt
+y7promptcolor "${y7promptcolor:-}"
+y7promptnote "${y7promptnote:-}"
+
+# Load configuration, if any.
+
+y7p=$(y7findconfig "${1##*/}")
+[[ -f "$y7p" ]] && . "$y7p"
+
+unset -f y7pstitle y7psterminalsupports256color y7mkprompt
